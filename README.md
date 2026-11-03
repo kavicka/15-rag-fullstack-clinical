@@ -2,20 +2,21 @@
 
 🇸🇰 [Slovenská verzia](README.sk.md)
 
-> **Status: in progress.** Code, tests, UI and the eval harness are done. Only the BM25 retrieval numbers have been
-> measured so far (cloud CPU). Dense, hybrid and rerank retrieval and all answer-quality numbers still need a run on
-> the Mac: the cloud session could not download the embedding models. Until then, no number below is filled in
-> that was not actually measured.
-
 ## TL;DR
-- A full-stack RAG app: FastAPI backend that streams answers over Server-Sent Events, a React + TypeScript UI with
-  clickable citations, and a sources panel that shows each stage's score for every retrieved chunk.
+- A full-stack RAG app: a FastAPI backend that streams answers over Server-Sent Events, and a React + TypeScript UI
+  with clickable citations and a sources panel that shows each stage's score for every retrieved chunk.
 - Corpus: 396 completed interventional trials from 8 therapeutic areas (ClinicalTrials.gov API v2), 694k words.
-- Eval: 156 questions built from structured fields (126 answerable with exact gold values, 30 unanswerable).
-- Measured so far (BM25, cloud CPU): **section-aware chunks put the answer-bearing chunk in the top 5 for 90.5 % of
-  questions vs 77.0 % for naive fixed-size chunks.**
+  Eval: 156 questions built from structured fields (126 answerable with exact gold values, 30 unanswerable).
+- **Answers (Qwen3-1.7B, cloud CPU): 15.9 % correct without retrieval → 96.8 % with hybrid search + reranker.**
+  92.1 % are correct *and* cite the right trial. Unanswerable questions got "I don't know" in 30 / 30 cases, and no
+  answer cited a trial that wasn't among its sources.
+- **Retrieval: section-aware chunks + reranker put the passage with the answer at rank 1 for 85.7 % of questions**
+  (BM25 42.1 %, dense 66.7 %, hybrid 49.2 %). At rank ≤ 5, section-aware chunks beat naive 220-word chunks in every
+  mode (e.g. BM25 0.905 vs 0.770).
 - One provider interface: Ollama (default, 0 €), a local Hugging Face model, AWS Bedrock or Azure OpenAI, chosen in
   `.env`. Bedrock and Azure are prepared for steps 18 and 19, not run here.
+
+![The app answering with a citation, and the retrieved chunks with per-stage scores](assets/ui.png)
 
 ## Problem
 Teams in clinical R&D ask questions like "how many patients did trial X enrol?" or "what masking did it use?".
@@ -32,9 +33,11 @@ makes the model answer from them, with a citation a human can check. This step a
 - **Eval set** (`eval/questions.jsonl`, seed 0): 7 question types × 18 (phase, enrollment, lead sponsor, start year,
   masking, intervention, minimum age), plus 15 questions about a fact no record has (budget) and 15 about trials that
   do not exist. Questions name the trial by its title, never by NCT id.
-- **Models:** embeddings `BAAI/bge-small-en-v1.5`, reranker `cross-encoder/ms-marco-MiniLM-L-6-v2`, LLM `qwen3:4b`
-  in Ollama. All are set in `.env`.
-- **Hardware:** BM25 numbers come from a cloud Linux CPU. Everything else is planned on a Mac (MPS).
+- **Models:** embeddings `BAAI/bge-small-en-v1.5`, reranker `cross-encoder/ms-marco-MiniLM-L-6-v2`. The LLM in the
+  measured run is `Qwen/Qwen3-1.7B` through transformers (greedy decoding, thinking off), because the cloud machine
+  has no Ollama. On the Mac the default is `qwen3:4b` in Ollama, which hasn't been measured yet.
+- **Hardware:** all numbers come from a cloud Linux machine with 4 CPU cores and no GPU, so the latencies are CPU
+  latencies.
 
 ## How it works
 ```
@@ -71,36 +74,70 @@ React UI ◄── SSE ── api/main.py ◄── rag/answer.py (prompt, citat
 ## Results
 ### Retrieval
 "evidence@k" means that a chunk which **contains the gold fact** (e.g. the exact line `Enrollment: 240 participants`)
-is in the top k. "trial@k" only asks for any chunk of the right trial. 141 questions (the fake-trial ones have no gold
-record); cloud CPU.
+is in the top k. "trial@5" only asks for any chunk of the right trial. 141 questions (the fake-trial ones have no gold
+record).
 
 | Chunking | Mode | evidence@1 | evidence@5 | evidence@10 | MRR@10 | trial@5 | p50 latency |
 |---|---|---|---|---|---|---|---|
 | fixed (220 words) | bm25 | 0.532 | 0.770 | 0.810 | 0.627 | 1.000 | 0.2 ms |
-| section + header | bm25 | 0.421 | **0.905** | 0.984 | 0.613 | 1.000 | 0.2 ms |
-| both | dense / hybrid / rerank | *pending Mac run* | | | | | |
+| fixed | dense | 0.540 | 0.786 | 0.841 | 0.654 | 0.986 | 75 ms |
+| fixed | hybrid | 0.516 | 0.770 | 0.841 | 0.637 | 1.000 | 135 ms |
+| fixed | rerank | 0.571 | 0.817 | 0.865 | 0.683 | 0.993 | 1041 ms |
+| section + header | bm25 | 0.421 | 0.905 | 0.984 | 0.613 | 1.000 | 0.2 ms |
+| section | dense | 0.667 | 0.968 | 0.992 | 0.788 | 1.000 | 144 ms |
+| section | hybrid | 0.492 | 0.976 | 1.000 | 0.705 | 1.000 | 143 ms |
+| section | **rerank** | **0.857** | **0.992** | 1.000 | **0.917** | 1.000 | 1042 ms |
 
 ![Retrieval](assets/retrieval.png)
 
 ### Answers
-*Pending the Mac run* (`make eval-generation`): accuracy, grounded accuracy (correct **and** cites the right trial),
-abstention on unanswerable questions, false abstentions, made-up citations and latency, for the LLM alone vs each
-retrieval mode.
+Section chunks, top 5 chunks in the prompt, 156 questions. "Grounded" = correct **and** cites the gold trial.
+"False abstain" = said "I don't know" although the answer was retrievable.
+
+| Variant | Accuracy | Grounded | False abstain | "I don't know" on unanswerable | Made-up citations | p50 / p95 latency |
+|---|---|---|---|---|---|---|
+| LLM alone (baseline) | 0.159 | 0.000 | 0.675 | 1.000 | 0.000 | 1.3 / 5.2 s |
+| bm25 | 0.889 | 0.833 | 0.079 | 1.000 | 0.000 | 8.7 / 17.6 s |
+| dense | 0.921 | 0.873 | 0.016 | 1.000 | 0.000 | 9.4 / 14.2 s |
+| hybrid | 0.960 | **0.929** | 0.008 | 1.000 | 0.000 | 8.0 / 15.4 s |
+| **rerank** | **0.968** | 0.921 | 0.008 | 1.000 | 0.000 | 10.1 / 17.1 s |
+
+![Answers](assets/generation.png)
+
+Clicking a citation opens the source record, so every answer can be checked in one click:
+
+![Source record behind a citation](assets/ui-source.png)
 
 ## Error analysis
-- **trial@5 = 1.0 for BM25 is a warning, not a win.** Questions quote the exact trial title, so word overlap alone
-  finds the trial. That is why the main metric is evidence@k: finding *the passage with the answer* is the hard part.
-- **Section chunks lose at @1 but win at @5 (0.421 vs 0.532, then 0.905 vs 0.770).** Likely cause: every section chunk
-  repeats the title in its header, so all chunks of the right trial match the title equally. The few remaining
-  question words and BM25's length penalty then decide the order, and short chunks get pushed up. The right trial
-  still fills the top 5. A reranker that reads question and chunk together is exactly the tool for this. To be
-  confirmed with the rerank run.
+- **The LLM alone isn't hallucinating much, it mostly refuses** (67.5 % "I don't know"). Its 15.9 % "accuracy" is
+  mostly *leakage from the question*: 12 of its 20 correct answers are intervention questions, where the drug name is
+  already in the trial title ("Evaluation of Sonelokimab for …" → "Sonelokimab"). A fairer eval would hide the
+  answer from the question.
+- **BM25 fails on minimum age** (0.556 vs 1.000 with rerank). "What is the minimum age for participants" shares almost
+  no rare words with `Minimum age: 18 Years`, so BM25 brings other chunks of the right trial and the model correctly
+  says "I don't know" (all 8 of its misses there). Dense retrieval understands "minimum age ≈ at least 18 years old".
+- **Near-duplicate trials.** "A Study to Test Different Doses of BI 1569912 in People With Depression" (225
+  participants) has a sibling whose title is the same plus "Who Take Anti-depressive Medicine" (243). Rerank answered
+  243 and cited the sibling, and BM25 gave up. The question is ambiguous for any retriever that ranks by overlap with
+  the title.
+- **The source can disagree with itself.** For one trial the Design section says `Masking: Triple`, but the summary
+  says "double-masked study design". The model believed the prose. Masking is the weakest type for dense, hybrid and
+  rerank (0.78–0.83).
+- **"Masking: None" reads like "missing".** Several answers said "did not specify the type of masking" for
+  `Masking: None`. Rendering it as "None (open label)" would remove the ambiguity.
+- **A scorer bug, found by reading answers.** "The trial did not use any masking" was first scored as wrong. The
+  rule was fixed (a test now covers both phrasings), and the stored answers were re-scored with
+  `eval/run_eval.py --rescore` (no LLM re-run). This changed one rerank answer: 0.960 → 0.968.
+- **Hybrid has a worse rank 1 than dense alone (0.492 vs 0.667) but a better top 5 (0.976 vs 0.968).** RRF rewards
+  chunks both retrievers like, and BM25 likes every chunk whose header repeats the title. The reranker is what turns
+  a good top 20 into a good rank 1.
 
 ## What I learned
-- A retrieval metric has to check for the *answer*, not the *document*. Without that, BM25 looked perfect.
-- RRF fuses rankings without calibrating scores, and the whole method is one line.
-- Streaming needs an explicit event protocol (`sources`, `token`, `done`, `error`), so the UI can show sources before
-  the first token and report a dead LLM instead of hanging.
+- A retrieval metric has to check for the *answer*, not the *document*. Without that, BM25 looked perfect
+  (trial@5 = 1.0).
+- Retrieval quality explains most of the answer quality: the order of evidence@5 is the order of accuracy.
+- A small 1.7B model is enough for extractive QA once the right passage is in the prompt. It never made up a citation.
+- Read the wrong answers: two of the "model errors" were really an ambiguous eval question and a too-strict scorer.
 
 ## Run it
 ```bash
@@ -116,13 +153,15 @@ make api                          # http://localhost:8000/docs
 make web                          # http://localhost:5173
 make test lint
 ```
+To reproduce the measured run without Ollama: `LLM_PROVIDER=transformers LLM_MODEL=Qwen/Qwen3-1.7B make eval-generation`.
 Optional: `docker compose up -d qdrant` and `QDRANT_URL=http://localhost:6333` for a real Qdrant server. Embedded
 Qdrant allows one process at a time, so stop the API before running the eval.
 
 ## Limitations
-- Questions are generated from templates and quote exact titles, which flatters keyword search. Paraphrased questions
-  (written by an LLM, then checked by hand) are the next step for a fairer dense-vs-BM25 comparison.
+- Questions are generated from templates and quote exact titles, which flatters keyword search and leaks intervention
+  names. Paraphrased questions (written by an LLM, then checked by hand) are the next step.
 - Answers are checked by rules (number present, name words present). This is transparent but can't judge long
   free-text answers, so the eval only asks short-fact questions.
 - Only single-trial questions. Questions across trials ("which psoriasis trials tested X?") are not measured.
+- Measured with Qwen3-1.7B on a cloud CPU, not with `qwen3:4b` on the Mac. Latencies are CPU latencies.
 - Bedrock and Azure providers are written but not run (they cost money; planned for steps 18 and 19).

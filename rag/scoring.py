@@ -9,7 +9,11 @@ import re
 
 _ROMAN = {"iv": "4", "iii": "3", "ii": "2", "i": "1"}
 _STOP = {"the", "of", "and", "for", "inc", "ltd", "llc", "co", "company", "corporation", "a", "an", "&"}
-NO_MASKING = ("none", "open label", "open-label", "no masking", "not masked", "unmasked", "not blinded", "unblinded")
+# "did not use any masking" is a correct answer for NONE; "did not specify the masking" is not (the record does).
+NO_MASKING = re.compile(
+    r"\bnone\b|open[- ]label|\bno masking|not masked|unmasked|not blinded|unblinded"
+    r"|(not|n't) use any (masking|blinding)"
+)
 
 
 def _norm(s: str) -> str:
@@ -50,7 +54,7 @@ def is_correct(kind: str, gold, answer: str) -> bool:
             return any(name_match(g, answer) for g in gold)
         case "masking":
             if gold == "NONE":
-                return any(w in a for w in NO_MASKING)
+                return bool(NO_MASKING.search(a))
             return gold.lower() in a
         case "unanswerable":
             return False  # scored as abstention instead

@@ -23,7 +23,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-from rag.answer import finalize, stream_answer  # noqa: E402
+from rag.answer import CITE_RE, finalize, stream_answer  # noqa: E402
 from rag.chunking import CHUNKERS  # noqa: E402
 from rag.config import ROOT, get_settings  # noqa: E402
 from rag.llm import get_llm  # noqa: E402
@@ -108,6 +108,45 @@ def eval_retrieval(qs: list[dict], modes: list[str]) -> None:
     merge_results("retrieval", out)
 
 
+def summarize(records: list[dict]) -> dict:
+    a_rec = [x for x in records if x["kind"] != "unanswerable"]
+    u_rec = [x for x in records if x["kind"] == "unanswerable"]
+    return {
+        "accuracy": round(sum(x["correct"] for x in a_rec) / len(a_rec), 3),
+        "grounded": round(sum(x["grounded"] for x in a_rec) / len(a_rec), 3),
+        "false_abstain": round(sum(x["abstained"] for x in a_rec) / len(a_rec), 3),
+        "abstain_unans": round(sum(x["abstained"] for x in u_rec) / len(u_rec), 3) if u_rec else None,
+        "bad_citations": round(sum(bool(x["bad_citations"]) for x in records) / len(records), 3),
+        "latency_ms_p50": pct([x["ms"] for x in records], 0.5),
+        "latency_ms_p95": pct([x["ms"] for x in records], 0.95),
+        "by_kind": {
+            k: round(statistics.mean(x["correct"] for x in a_rec if x["kind"] == k), 3)
+            for k in sorted({x["kind"] for x in a_rec})
+        },
+    }
+
+
+def rescore(qs: list[dict]) -> None:
+    """Re-apply the answer rules to the stored answers (after a scorer fix) without calling the LLM again."""
+    by_id = {q["id"]: q for q in qs}
+    res = json.loads(RESULTS.read_text())
+    gen = res["generation"]
+    for path in sorted(RUNS.glob("generation_*.jsonl")):
+        v = path.stem.removeprefix("generation_")
+        records = [json.loads(line) for line in path.open()]
+        for x in records:
+            q = by_id[x["id"]]
+            x["correct"] = (
+                q["kind"] != "unanswerable" and not x["abstained"] and is_correct(q["kind"], q["gold"], x["answer"])
+            )
+            x["grounded"] = x["correct"] and q["nct_id"] in CITE_RE.findall(x["answer"])
+        path.write_text("".join(json.dumps(x, ensure_ascii=False) + "\n" for x in records))
+        gen[v] = summarize(records)
+        print(v, {k: val for k, val in gen[v].items() if k != "by_kind"})
+    gen["meta"]["rescored"] = datetime.now(UTC).isoformat(timespec="seconds")
+    RESULTS.write_text(json.dumps(res, indent=1, ensure_ascii=False) + "\n")
+
+
 def eval_generation(qs: list[dict], variants: list[str]) -> None:
     s = get_settings()
     llm = get_llm(s)
@@ -148,23 +187,9 @@ def eval_generation(qs: list[dict], variants: list[str]) -> None:
                 }
             )
         (RUNS / f"generation_{v}.jsonl").write_text("".join(json.dumps(x, ensure_ascii=False) + "\n" for x in records))
-        a_rec = [x for x in records if x["kind"] != "unanswerable"]
-        u_rec = [x for x in records if x["kind"] == "unanswerable"]
-        out[v] = {
-            "accuracy": round(sum(x["correct"] for x in a_rec) / len(a_rec), 3),
-            "grounded": round(sum(x["grounded"] for x in a_rec) / len(a_rec), 3),
-            "false_abstain": round(sum(x["abstained"] for x in a_rec) / len(a_rec), 3),
-            "abstain_unans": round(sum(x["abstained"] for x in u_rec) / len(u_rec), 3) if u_rec else None,
-            "bad_citations": round(sum(bool(x["bad_citations"]) for x in records) / len(records), 3),
-            "latency_ms_p50": pct([x["ms"] for x in records], 0.5),
-            "latency_ms_p95": pct([x["ms"] for x in records], 0.95),
-            "by_kind": {
-                k: round(statistics.mean(x["correct"] for x in a_rec if x["kind"] == k), 3)
-                for k in sorted({x["kind"] for x in a_rec})
-            },
-        }
-        print(v, {k: val for k, val in out[v].items() if k != "by_kind"})
-    merge_results("generation", out)
+        out[v] = summarize(records)
+        print(v, {k: val for k, val in out[v].items() if k != "by_kind"}, flush=True)
+        merge_results("generation", out)  # after every variant, so a long run that dies keeps what it measured
 
 
 def main() -> None:
@@ -173,6 +198,7 @@ def main() -> None:
     ap.add_argument("--generation", action="store_true")
     ap.add_argument("--modes", nargs="+", default=list(MODES), help="retrieval modes to evaluate")
     ap.add_argument("--variants", nargs="+", default=["no_rag", *MODES])
+    ap.add_argument("--rescore", action="store_true", help="re-apply the scoring rules to stored answers")
     ap.add_argument("--limit", type=int, default=None, help="every n-th question only, for a quick smoke run")
     args = ap.parse_args()
     qs = load_questions()
@@ -182,6 +208,8 @@ def main() -> None:
         eval_retrieval(qs, args.modes)
     if args.generation:
         eval_generation(qs, args.variants)
+    if args.rescore:
+        rescore(qs)
 
 
 if __name__ == "__main__":

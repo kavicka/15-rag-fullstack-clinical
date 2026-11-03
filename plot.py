@@ -54,9 +54,9 @@ def generation() -> None:
     for j, (m, color) in enumerate(metrics):
         bars = ax.bar(x + (j - 1.5) * w, [gen[v][m] or 0 for v in variants], w, color=color, label=m)
         ax.bar_label(bars, fmt="%.2f", fontsize=7)
-    ax.set(xticks=x, xticklabels=variants, ylim=(0, 1.1), ylabel="share of questions")
+    ax.set(xticks=x, xticklabels=variants, ylim=(0, 1.25), ylabel="share of questions")
     ax.set_title(f"Answers by {gen['meta']['llm']} ({gen['meta']['hardware']})", fontsize=10)
-    ax.legend(ncol=4, fontsize=8, loc="upper left")
+    ax.legend(ncol=4, fontsize=8, loc="upper center")
     ax.grid(alpha=0.3, axis="y")
     save(fig, "generation.png")
 

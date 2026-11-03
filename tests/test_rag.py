@@ -66,6 +66,8 @@ def test_rrf_rewards_documents_both_retrievers_like():
         ("sponsor", "National Institute on Aging (NIA)", "Sponsored by the NIA.", True),
         ("sponsor", "Eli Lilly and Company", "Eli Lilly", True),
         ("masking", "NONE", "It was an open-label study.", True),
+        ("masking", "NONE", "The trial did not use any masking [NCT1].", True),
+        ("masking", "NONE", "The trial did not specify the type of masking used.", False),
         ("masking", "QUADRUPLE", "Quadruple-blind.", True),
         ("intervention", ["Placebo", "Metformin"], "Metformin was tested.", True),
     ],
