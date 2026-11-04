@@ -1,0 +1,7 @@
+# Optional: a real Qdrant server instead of the embedded local mode (set QDRANT_URL=http://localhost:6333).
+# Step 17 will put the API and the frontend into containers too.
+services:
+  qdrant:
+    image: qdrant/qdrant:v1.12.4
+    ports: ["127.0.0.1:6333:6333"]   # bound to localhost only: no reason to expose it to the network
+    volumes: ["./data/qdrant-server:/qdrant/storage"]

@@ -1,17 +1,37 @@
 [project]
-name = "nn-short-name"
+name = "rag-fullstack-clinical"
 version = "0.1.0"
-description = "One-line description of the step"
+description = "Step 15 · P7: eval-driven RAG app (FastAPI + React) over public clinical-trial records"
 requires-python = ">=3.12"
 dependencies = [
-    "matplotlib>=3.11.2",
-    "numpy>=2.5.4",
+    "fastapi>=0.115",
+    "uvicorn[standard]>=0.32",
+    "httpx>=0.28",
+    "pydantic-settings>=2.6",
+    "qdrant-client>=1.12",
+    "sentence-transformers>=3.3",
+    "numpy>=2.1",
+    "matplotlib>=3.9",
 ]
+
+[project.optional-dependencies]
+# Cloud providers are optional: the default stack runs fully local (Ollama) at 0 €.
+bedrock = ["boto3>=1.35"]
+azure = ["openai>=1.55"]
 
 [dependency-groups]
 dev = [
-    "ruff>=0.17.3",
+    "ruff>=0.8",
+    "pytest>=8.3",
 ]
 
 [tool.ruff]
 line-length = 120
+extend-exclude = ["frontend"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]
